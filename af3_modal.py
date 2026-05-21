@@ -112,7 +112,7 @@ def cache_file_name(job_name: str) -> str:
     },
     cpu=24,
     memory=16384,
-    timeout=60 * 60 * 3,
+    timeout=60 * 60 * 12,
 )
 def run_data_pipeline(fasta_json: str, job_name: str) -> str:
     import subprocess
@@ -197,7 +197,7 @@ def run_data_pipeline(fasta_json: str, job_name: str) -> str:
     gpu="H100",
     cpu=4,
     memory=16384,
-    timeout=60 * 60 * 1,
+    timeout=60 * 60 * 12,
 )
 def run_inference(job_name: str) -> str:
     import subprocess
@@ -252,7 +252,7 @@ def run_inference(job_name: str) -> str:
     gpu="H100",
     cpu=4,
     memory=16384,
-    timeout=60 * 60 * 1,
+    timeout=60 * 60 * 12,
 )
 def run_inference_no_msa(job_name: str, raw_json: str) -> str:
     import json

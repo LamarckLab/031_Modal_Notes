@@ -380,6 +380,7 @@ modal volume put <VOLUME_NAME> <LOCAL_PATH> <REMOTE_PATH>
 ```bash
 modal volume get <VOLUME_NAME> <REMOTE_PATH> <LOCAL_PATH>
 # modal volume get lamarck-data /hello.txt /data/lmk/miao.txt
+# modal volume get alphafold3-results / "C:\Users\Lamarck\Desktop\results"
 ```
 
 > **在 volume 中复制文件**
