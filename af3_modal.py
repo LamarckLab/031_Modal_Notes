@@ -1,66 +1,66 @@
-import os
-import pathlib
-import modal
+import os        # 文件系统操作 (主要用 os.fsync 刷盘)
+import pathlib    # 路径处理, 用 Path 对象
+import modal      # Modal SDK, 上云核心
 
-app = modal.App("alphafold3-batch")
+app = modal.App("alphafold3-batch")  # 创建 App, 所有函数 / 入口都挂在上面
 
 # ============================================================
 # 本地路径配置
 # ============================================================
-INPUT_DIR = pathlib.Path(r"C:\Users\Lamarck\Desktop\af3_inputs")              # 输入 JSON
-MSA_DIR = pathlib.Path(r"C:\Users\Lamarck\Desktop\af3_msa")                   # 本地 MSA 缓存
-MSA_OUTPUT_DIR = pathlib.Path(r"C:\Users\Lamarck\Desktop\af3_msa_outputs")        # MSA-based 推理结果
-NO_MSA_DIR = pathlib.Path(r"C:\Users\Lamarck\Desktop\af3_no_msa")                 # MSA-free 加工后的 JSON
-NO_MSA_OUTPUT_DIR = pathlib.Path(r"C:\Users\Lamarck\Desktop\af3_no_msa_outputs")  # MSA-free 推理结果
+INPUT_DIR = pathlib.Path(r"C:\Users\Lamarck\Desktop\af3_inputs")              # 输入: 原始序列 JSON
+MSA_DIR = pathlib.Path(r"C:\Users\Lamarck\Desktop\af3_msa")                   # 缓存: data pipeline 产物 _data.json
+MSA_OUTPUT_DIR = pathlib.Path(r"C:\Users\Lamarck\Desktop\af3_msa_outputs")        # 输出: MSA 推理结果
+NO_MSA_DIR = pathlib.Path(r"C:\Users\Lamarck\Desktop\af3_no_msa")                 # 中间: MSA-free 输入 (补空 MSA 字段)
+NO_MSA_OUTPUT_DIR = pathlib.Path(r"C:\Users\Lamarck\Desktop\af3_no_msa_outputs")  # 输出: MSA-free 推理结果
 
 
 # ============================================================
 # 严格对照 AlphaFold3 官方 Dockerfile 构建 af3_image
 # ============================================================
 af3_image = (
-    modal.Image.from_registry(
+    modal.Image.from_registry(                       # 基础镜像: 官方 CUDA 12.6.3 + Ubuntu 24.04
         "nvidia/cuda:12.6.3-base-ubuntu24.04",
-        add_python="3.12",
+        add_python="3.12",                           # 镜像内装 Python 3.12
     )
-    .apt_install(
+    .apt_install(                                    # 系统依赖: git/wget + 编译工具链 + zlib/zstd/patch
         "git", "wget",
         "gcc", "g++", "make",
         "zlib1g-dev", "zstd",
         "patch", "clang",
     )
-    .pip_install("uv==0.9.24")
-    .env({
+    .pip_install("uv==0.9.24")                       # 装 uv (AF3 官方用的包管理器), 锁版本
+    .env({                                           # uv 行为 + PATH (hmmer 和 venv 放最前)
         "UV_COMPILE_BYTECODE": "1",
         "UV_PROJECT_ENVIRONMENT": "/alphafold3_venv",
         "PATH": "/hmmer/bin:/alphafold3_venv/bin:/usr/local/bin:/usr/bin:/bin",
     })
-    .run_commands("uv venv /alphafold3_venv")
+    .run_commands("uv venv /alphafold3_venv")        # 建独立虚拟环境
     .run_commands(
-        "git clone https://github.com/google-deepmind/alphafold3.git /app/alphafold",
+        "git clone https://github.com/google-deepmind/alphafold3.git /app/alphafold",  # 拉 AF3 源码
     )
-    .run_commands(
+    .run_commands(                                   # 下载 hmmer 3.4 源码 + 校验 sha256 + 解压
         "mkdir -p /hmmer_build /hmmer",
         "wget http://eddylab.org/software/hmmer/hmmer-3.4.tar.gz -P /hmmer_build",
         "cd /hmmer_build && echo 'ca70d94fd0cf271bd7063423aabb116d42de533117343a9b27a65c17ff06fbf3  hmmer-3.4.tar.gz' | sha256sum --check",
         "cd /hmmer_build && tar zxf hmmer-3.4.tar.gz && rm hmmer-3.4.tar.gz",
     )
-    .run_commands(
+    .run_commands(                                   # 打 AF3 官方补丁 (jackhmmer 序列数上限)
         "cp /app/alphafold/docker/jackhmmer_seq_limit.patch /hmmer_build/",
         "cd /hmmer_build && patch -p0 < jackhmmer_seq_limit.patch",
     )
-    .run_commands(
+    .run_commands(                                   # 编译安装 hmmer 到 /hmmer, 装完删源码
         "cd /hmmer_build/hmmer-3.4 && ./configure --prefix=/hmmer && make -j4",
         "cd /hmmer_build/hmmer-3.4 && make install",
         "cd /hmmer_build/hmmer-3.4/easel && make install",
         "rm -rf /hmmer_build",
     )
-    .run_commands(
+    .run_commands(                                   # 按 uv.lock 装 AF3 全部依赖 (--frozen 不改锁文件)
         "cd /app/alphafold && UV_HTTP_TIMEOUT=1800 uv sync --frozen --all-groups --no-editable",
     )
-    .run_commands(
+    .run_commands(                                   # 编译 AF3 的数据处理扩展 (build_data)
         "cd /app/alphafold && uv run build_data",
     )
-    .env({
+    .env({                                           # XLA/JAX 运行期调优 (关 triton gemm + 预占 95% 显存)
         "XLA_FLAGS": "--xla_gpu_enable_triton_gemm=false",
         "XLA_PYTHON_CLIENT_PREALLOCATE": "true",
         "XLA_CLIENT_MEM_FRACTION": "0.95",
@@ -71,14 +71,14 @@ af3_image = (
 # ============================================================
 # Volumes: 数据库/权重 + MSA 缓存 + 推理结果
 # ============================================================
-af3_volume = modal.Volume.from_name("alphafold3-data")
+af3_volume = modal.Volume.from_name("alphafold3-data")  # 数据库 + 权重 (需预先建好, 这里不自动创建)
 
-msa_cache_volume = modal.Volume.from_name(
+msa_cache_volume = modal.Volume.from_name(   # MSA 缓存 (data pipeline 产物)
     "alphafold3-msa-cache",
-    create_if_missing=True,
+    create_if_missing=True,                  # 不存在就自动创建
 )
 
-results_volume = modal.Volume.from_name(
+results_volume = modal.Volume.from_name(     # 推理结果
     "alphafold3-results",
     create_if_missing=True,
 )
@@ -89,44 +89,44 @@ results_volume = modal.Volume.from_name(
 #   子文件夹: {job_name}-msa-cache
 #   缓存文件: {job_name}-msa-cache.json
 # ============================================================
-CACHE_SUFFIX = "-msa-cache"
+CACHE_SUFFIX = "-msa-cache"                  # 缓存文件夹/文件名统一后缀
 
 
-def cache_dir_name(job_name: str) -> str:
+def cache_dir_name(job_name: str) -> str:    # job 名 -> 缓存子文件夹名
     return f"{job_name}{CACHE_SUFFIX}"
 
 
-def cache_file_name(job_name: str) -> str:
+def cache_file_name(job_name: str) -> str:   # job 名 -> 缓存文件名 (子文件夹名 + .json)
     return f"{job_name}{CACHE_SUFFIX}.json"
 
 
 # ============================================================
 # 函数 1: 数据管线阶段 (MSA + 模板搜索)
-# 产出: /msa_cache/{job_name}-msa-cache/{job_name}-msa-cache.json
 # ============================================================
 @app.function(
-    image=af3_image,
+    image=af3_image,                         # 用上面构建的镜像
     volumes={
-        "/data": af3_volume,
-        "/msa_cache": msa_cache_volume,
+        "/data": af3_volume,                 # 数据库/权重 (只读)
+        "/msa_cache": msa_cache_volume,      # MSA 缓存写出处
     },
-    cpu=24,
-    memory=16384,
-    timeout=60 * 60 * 12,
+    cpu=16,                                  # 16 核 CPU
+    memory=8192,                            # 8 GB 内存
+    timeout=60 * 60 * 12,                    # 最长 12 小时
 )
 def run_data_pipeline(fasta_json: str, job_name: str) -> str:
-    import subprocess
+    import subprocess                        # 容器内 import (云端使用)
     import pathlib
     import shutil
     import os
 
+    # 按命名约定拼出缓存目标路径
     cache_subdir = cache_dir_name(job_name)
     cache_file = cache_file_name(job_name)
     target_dir = pathlib.Path(f"/msa_cache/{cache_subdir}")
     target_file = target_dir / cache_file
 
-    msa_cache_volume.reload()
-    if target_file.exists():
+    msa_cache_volume.reload()                # 拉取 volume 最新状态
+    if target_file.exists():                 # 已有缓存 -> 直接跳过
         print(f"[cache hit] job={job_name}")
         return job_name
 
@@ -138,36 +138,36 @@ def run_data_pipeline(fasta_json: str, job_name: str) -> str:
     input_path = input_dir / f"{job_name}.json"
     input_path.write_text(fasta_json)
 
-    # AF3 先写到容器内临时输出目录,跑完后再重命名到 volume
+    # AF3 先写容器内临时目录, 跑完再搬到 volume
     tmp_out = pathlib.Path(f"/tmp/af_out/{job_name}")
     if tmp_out.exists():
         shutil.rmtree(tmp_out)
     tmp_out.mkdir(parents=True, exist_ok=True)
 
-    cmd = [
+    cmd = [                                  # 调 AF3 主程序
         "uv", "run", "python3", "/app/alphafold/run_alphafold.py",
         f"--json_path={input_path}",
-        "--db_dir=/data/databases",
+        "--db_dir=/data/databases",          # 数据库目录
         f"--output_dir={tmp_out}",
-        "--norun_inference",
-        "--jackhmmer_n_cpu=6",
+        "--norun_inference",                 # 关键: 只跑数据管线, 不做推理
+        "--jackhmmer_n_cpu=6",               # jackhmmer 用 6 核
     ]
-    subprocess.run(cmd, check=True, cwd="/app/alphafold")
+    subprocess.run(cmd, check=True, cwd="/app/alphafold")  # check=True: 非零退出即抛错
 
-    # 找到 AF3 产出的 *_data.json,按约定重命名并放到 volume
+    # 找 AF3 产出的 *_data.json (含 MSA + 模板)
     data_jsons = list(tmp_out.rglob("*_data.json"))
     if not data_jsons:
         raise FileNotFoundError(f"No *_data.json produced by AF3 in {tmp_out}")
     source = data_jsons[0]
 
     target_dir.mkdir(parents=True, exist_ok=True)
-    # 分块写入 + fsync 强制刷盘, 避免 shutil.copy2 在 Modal volume FUSE 挂载上
-    # 因 sparse-write / page cache 未回写导致的文件损坏
+    # 分块写 + fsync 强制刷盘, 避免在 Modal volume (FUSE) 上写出损坏文件
     with open(source, "rb") as src_f, open(target_file, "wb") as dst_f:
         shutil.copyfileobj(src_f, dst_f, length=1024 * 1024)
         dst_f.flush()
         os.fsync(dst_f.fileno())
 
+    # 校验大小, 防止只写了一半
     src_size = source.stat().st_size
     dst_size = target_file.stat().st_size
     if src_size != dst_size:
@@ -176,8 +176,8 @@ def run_data_pipeline(fasta_json: str, job_name: str) -> str:
             f"src={src_size} dst={dst_size}"
         )
 
-    shutil.rmtree(tmp_out, ignore_errors=True)
-    msa_cache_volume.commit()
+    shutil.rmtree(tmp_out, ignore_errors=True)  # 清临时目录
+    msa_cache_volume.commit()                # 提交 volume, 持久化缓存
     print(f"[done] MSA cached at {target_file}")
     return job_name
 
