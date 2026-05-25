@@ -85,19 +85,16 @@ results_volume = modal.Volume.from_name(     # 推理结果
 
 
 # ============================================================
-# 缓存路径约定 (本地和 volume 结构一致)
-#   子文件夹: {job_name}-msa-cache
-#   缓存文件: {job_name}-msa-cache.json
+# MSA 缓存路径约定 (AF3 原生结构, 本地和 volume 一致)
+#   子文件夹: {job_name}/
+#   缓存文件: {job_name}/{job_name}_data.json
 # ============================================================
-CACHE_SUFFIX = "-msa-cache"                  # 缓存文件夹/文件名统一后缀
+def msa_file_name(job_name: str) -> str:     # job 名 -> data.json 文件名
+    return f"{job_name}_data.json"
 
 
-def cache_dir_name(job_name: str) -> str:    # job 名 -> 缓存子文件夹名
-    return f"{job_name}{CACHE_SUFFIX}"
-
-
-def cache_file_name(job_name: str) -> str:   # job 名 -> 缓存文件名 (子文件夹名 + .json)
-    return f"{job_name}{CACHE_SUFFIX}.json"
+def msa_remote_path(job_name: str) -> str:   # job 名 -> volume 内相对路径 {job}/{job}_data.json
+    return f"{job_name}/{msa_file_name(job_name)}"
 
 
 # ============================================================
@@ -119,11 +116,9 @@ def run_data_pipeline(fasta_json: str, job_name: str) -> str:
     import shutil
     import os
 
-    # 按命名约定拼出缓存目标路径
-    cache_subdir = cache_dir_name(job_name)
-    cache_file = cache_file_name(job_name)
-    target_dir = pathlib.Path(f"/msa_cache/{cache_subdir}")
-    target_file = target_dir / cache_file
+    # 缓存目标: /msa_cache/{job}/{job}_data.json (AF3 原生结构)
+    target_dir = pathlib.Path(f"/msa_cache/{job_name}")
+    target_file = target_dir / msa_file_name(job_name)
 
     msa_cache_volume.reload()                # 拉取 volume 最新状态
     if target_file.exists():                 # 已有缓存 -> 直接跳过
@@ -184,7 +179,7 @@ def run_data_pipeline(fasta_json: str, job_name: str) -> str:
 
 # ============================================================
 # 函数 2: 推理阶段
-# 读取: /msa_cache/{job_name}-msa-cache/{job_name}-msa-cache.json
+# 读取: /msa_cache/{job_name}/{job_name}_data.json
 # 产出: /results/{job_name}/...
 # ============================================================
 @app.function(
@@ -206,9 +201,7 @@ def run_inference(job_name: str) -> str:
 
     msa_cache_volume.reload()
 
-    cache_subdir = cache_dir_name(job_name)
-    cache_file = cache_file_name(job_name)
-    data_json_path = pathlib.Path(f"/msa_cache/{cache_subdir}/{cache_file}")
+    data_json_path = pathlib.Path(f"/msa_cache/{msa_remote_path(job_name)}")
 
     if not data_json_path.exists():
         raise FileNotFoundError(
@@ -355,14 +348,10 @@ def download_from_volume(volume: modal.Volume, remote_prefix: str, local_dir: pa
     return success
 
 
-def upload_dir_to_volume(volume: modal.Volume, local_dir: pathlib.Path, remote_prefix: str) -> int:
-    """把 local_dir 上传到 volume 的 remote_prefix 路径 (覆盖)"""
-    file_count = sum(1 for p in local_dir.rglob("*") if p.is_file())
-    if file_count == 0:
-        return 0
+def upload_file_to_volume(volume: modal.Volume, local_file: pathlib.Path, remote_path: str) -> None:
+    """把单个 local_file 上传到 volume 的 remote_path (覆盖)"""
     with volume.batch_upload(force=True) as batch:
-        batch.put_directory(str(local_dir), remote_prefix)
-    return file_count
+        batch.put_file(str(local_file), remote_path)
 
 
 def transform_to_msa_free(raw_json: str) -> str:
@@ -381,11 +370,9 @@ def transform_to_msa_free(raw_json: str) -> str:
 
 def volume_has_msa_cache(job_name: str) -> bool:
     """检查 volume 里是否已有该 job 的 MSA 缓存文件 (本地调用)"""
-    cache_subdir = cache_dir_name(job_name)
-    cache_file = cache_file_name(job_name)
-    target_path = f"{cache_subdir}/{cache_file}"
+    target_path = msa_remote_path(job_name)  # {job}/{job}_data.json
     try:
-        for entry in msa_cache_volume.iterdir(f"{cache_subdir}/", recursive=True):
+        for entry in msa_cache_volume.iterdir(f"{job_name}/", recursive=True):
             if entry.type == modal.volume.FileEntryType.FILE and entry.path == target_path:
                 return True
     except (FileNotFoundError, modal.exception.NotFoundError):
@@ -472,8 +459,8 @@ def main(skip_existing: bool = True):
             pool.submit(
                 download_from_volume,
                 msa_cache_volume,
-                cache_dir_name(job_name),
-                MSA_DIR / cache_dir_name(job_name),
+                job_name,
+                MSA_DIR / job_name,
             ): job_name
             for job_name, _ in jobs
         }
@@ -569,8 +556,8 @@ def only_data_pipeline(skip_existing: bool = True):
             pool.submit(
                 download_from_volume,
                 msa_cache_volume,
-                cache_dir_name(job_name),
-                MSA_DIR / cache_dir_name(job_name),
+                job_name,
+                MSA_DIR / job_name,
             ): job_name
             for job_name in all_job_names
         }
@@ -592,8 +579,8 @@ def only_data_pipeline(skip_existing: bool = True):
 @app.local_entrypoint()
 def only_inference(skip_existing: bool = True):
     """
-    扫描本地 MSA_DIR 下所有 {job_name}-msa-cache 子文件夹:
-      1. 把本地缓存上传到 volume (volume 已有则跳过上传)
+    扫描本地 MSA_DIR 下所有 {job}/{job}_data.json (AF3 原生结构):
+      1. 把本地 data.json 上传到 volume (volume 已有则跳过上传)
       2. 跑 inference
       3. 下载推理结果到本地 MSA_OUTPUT_DIR
 
@@ -604,55 +591,47 @@ def only_inference(skip_existing: bool = True):
     if not MSA_DIR.exists():
         raise FileNotFoundError(f"Local MSA cache dir not found: {MSA_DIR}")
 
-    # 扫描 -msa-cache 结尾的子文件夹
-    cache_folders = []
+    # 扫描 AF3 原生结构: 每个子文件夹里找 *_data.json, job 名 = 文件夹名
+    found = []
     for d in sorted(MSA_DIR.iterdir()):
         if not d.is_dir():
             continue
-        if not d.name.endswith(CACHE_SUFFIX):
-            print(f"[skip] {d.name} 文件夹名不以 '{CACHE_SUFFIX}' 结尾")
+        data_files = sorted(d.glob("*_data.json"))
+        if not data_files:
+            print(f"[skip] {d.name} 文件夹内无 *_data.json")
             continue
-        job_name = d.name[:-len(CACHE_SUFFIX)]
-        expected_file = d / cache_file_name(job_name)
-        if not expected_file.exists():
-            print(f"[skip] {d.name} 缺失 {expected_file.name}")
-            continue
-        cache_folders.append((job_name, d))
+        found.append((d.name, data_files[0]))    # (job 名, data.json 路径)
 
-    if not cache_folders:
-        print(f"No valid cache folders in {MSA_DIR}")
+    if not found:
+        print(f"No valid MSA folders in {MSA_DIR}")
         return
 
     # 过滤已有本地结果的 (以存在非空 {job}_model.cif 为完成标志, 0 字节或缺失都视为未完成)
     jobs = []
-    for job_name, cache_folder in cache_folders:
+    for job_name, data_file in found:
         job_dir = MSA_OUTPUT_DIR / job_name
         marker_files = list(job_dir.rglob(f"{job_name}_model.cif")) if job_dir.exists() else []
         if skip_existing and any(m.stat().st_size > 0 for m in marker_files):
             print(f"[skip] {job_name} already has complete local results")
             continue
-        jobs.append((job_name, cache_folder))
+        jobs.append((job_name, data_file))
 
     if not jobs:
         print("Nothing to do.")
         return
 
     print("=" * 60)
-    print(f"Found {len(cache_folders)} cache(s), {len(jobs)} to run inference")
+    print(f"Found {len(found)} MSA folder(s), {len(jobs)} to run inference")
     print("=" * 60)
 
-    # --- 上传本地缓存到 volume ---
-    print("\n[Upload] Uploading local cache(s) to volume...")
-    for job_name, cache_folder in jobs:
+    # --- 上传本地 data.json 到 volume (按 {job}/{job}_data.json 落位) ---
+    print("\n[Upload] Uploading local data.json to volume...")
+    for job_name, data_file in jobs:
         if volume_has_msa_cache(job_name):
             print(f"  [SKIP] {job_name:20s} already in volume")
             continue
-        n = upload_dir_to_volume(
-            msa_cache_volume,
-            cache_folder,
-            cache_dir_name(job_name),
-        )
-        print(f"  [OK]   {job_name:20s} uploaded {n} file(s)")
+        upload_file_to_volume(msa_cache_volume, data_file, msa_remote_path(job_name))
+        print(f"  [OK]   {job_name:20s} uploaded {data_file.name}")
 
     # --- 跑 inference ---
     print(f"\nRunning inference for {len(jobs)} job(s)...")
