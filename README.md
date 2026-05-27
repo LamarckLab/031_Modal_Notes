@@ -379,9 +379,11 @@ modal volume put <VOLUME_NAME> <LOCAL_PATH> <REMOTE_PATH>
 > **从 volume 下载文件到本地**
 ```bash
 modal volume get <VOLUME_NAME> <REMOTE_PATH> <LOCAL_PATH>
-# modal volume get lamarck-data /hello.txt /data/lmk/miao.txt
+# 加 --force 会覆盖当前已有的文件与目录
 # modal volume get alphafold3-results / "C:\Users\Lamarck\Desktop\af3_msa_outputs"
 # modal volume get --force alphafold3-results / "C:\Users\Lamarck\Desktop\af3_msa_outputs"
+# 只下载某个子目录
+# modal volume get alphafold3-results /Ad7_Hexon_H1_36 "C:\Users\Lamarck\Desktop\af3_msa_outputs\Ad7_Hexon_H1_36"
 ```
 
 > **在 volume 中复制文件**
