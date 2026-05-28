@@ -383,7 +383,7 @@ modal volume get <VOLUME_NAME> <REMOTE_PATH> <LOCAL_PATH>
 # modal volume get alphafold3-results / "C:\Users\Lamarck\Desktop\af3_msa_outputs"
 # modal volume get --force alphafold3-results / "C:\Users\Lamarck\Desktop\af3_msa_outputs"
 # 只下载某个子目录
-# modal volume get alphafold3-results /Ad7_Hexon_H1_36 "C:\Users\Lamarck\Desktop\af3_msa_outputs\Ad7_Hexon_H1_36"
+# modal volume get alphafold3-results /Ad7_Hexon_H1_36 "C:\Users\Lamarck\Desktop\af3_msa_outputs"
 ```
 
 > **在 volume 中复制文件**
