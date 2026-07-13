@@ -1,4 +1,4 @@
-<h2 align="center">☁️ Modal 云计算平台学习笔记</h2>
+<h1 align="center">💻 Modal 云计算平台学习笔记</h1>
 
 <p align="center">
   <i> —— 2026.04.01</i>
@@ -23,7 +23,7 @@
 
 ---
 <a id="basics-notes"></a>
-# 🥕 Basics Notes
+# Basics Notes
 
 ### 01 -- Modal 介绍
 ```text
@@ -69,7 +69,7 @@ image = (
 ---
 
 <a id="concept-notes"></a>
-#  🥕 Concept Notes
+# Concept Notes
 
 ### 01 -- Modal 的 App 类
 ```text
@@ -342,7 +342,7 @@ def f():
 ---
 
 <a id="cli-notes"></a>
-#  🥕 CLI Notes
+# CLI Notes
 
 ---
 ### 01 -- Volume CLI
