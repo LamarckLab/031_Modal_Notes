@@ -1,8 +1,6 @@
 <h1 align="center">💻 Modal 云计算平台学习笔记</h1>
 
-<p align="center">
-  <i> —— 2026.04.01</i>
-</p>
+<p align="center"><em>—— 2026.04.01</em></p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/Platform-Modal-7FEE64?style=flat-square" />
