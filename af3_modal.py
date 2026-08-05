@@ -140,7 +140,7 @@ def run_data_pipeline(fasta_json: str, job_name: str) -> str:
     tmp_out.mkdir(parents=True, exist_ok=True)
 
     cmd = [                                  # 调 AF3 主程序
-        "uv", "run", "python3", "/app/alphafold/run_alphafold.py",
+        "/alphafold3_venv/bin/python3", "/app/alphafold/run_alphafold.py",
         f"--json_path={input_path}",
         "--db_dir=/data/databases",          # 数据库目录
         f"--output_dir={tmp_out}",
@@ -193,6 +193,7 @@ def run_data_pipeline(fasta_json: str, job_name: str) -> str:
     cpu=4,
     memory=16384,
     timeout=60 * 60 * 12,
+    retries=modal.Retries(max_retries=2, initial_delay=10.0),   # 偶发网络故障自愈, 不拖垮整批
 )
 def run_inference(job_name: str) -> str:
     import subprocess
@@ -216,8 +217,10 @@ def run_inference(job_name: str) -> str:
         shutil.rmtree(result_dir)
     result_dir.mkdir(parents=True, exist_ok=True)
 
+    # 直接用镜像里装好的 venv, 不走 uv run —— uv run 每次会校验并可能重建环境,
+    # 重建时 cifpp 的 CMake 要联网下 CCD 文件, SSL 一挂整批任务就中止
     cmd = [
-        "uv", "run", "python3", "/app/alphafold/run_alphafold.py",
+        "/alphafold3_venv/bin/python3", "/app/alphafold/run_alphafold.py",
         f"--json_path={data_json_path}",
         "--model_dir=/data/parameters",
         f"--output_dir={result_dir}",
@@ -274,7 +277,7 @@ def run_inference_no_msa(job_name: str, raw_json: str) -> str:
     result_dir.mkdir(parents=True, exist_ok=True)
 
     cmd = [
-        "uv", "run", "python3", "/app/alphafold/run_alphafold.py",
+        "/alphafold3_venv/bin/python3", "/app/alphafold/run_alphafold.py",
         f"--json_path={tmp_json}",
         "--model_dir=/data/parameters",
         f"--output_dir={result_dir}",
@@ -290,12 +293,26 @@ def run_inference_no_msa(job_name: str, raw_json: str) -> str:
 # ============================================================
 # 本地辅助: volume ↔ 本地 文件传输
 # ============================================================
-def download_from_volume(volume: modal.Volume, remote_prefix: str, local_dir: pathlib.Path) -> int:
+def is_bulky_result(file_name: str) -> bool:
+    """推理结果里体积大但通常用不到的文件, 需要时再手动去 volume 取。
+
+    *_confidences.json      每 sample 约 6.4 MB, 完整 PAE 矩阵 (注意别误伤 *_summary_confidences.json)
+    *_data.json             约 40 MB, AF3 把输入 MSA 原样复制到输出, 本地 MSA_DIR 已有同一份
+    """
+    if file_name.endswith("_data.json"):
+        return True
+    return (file_name.endswith("_confidences.json")
+            and not file_name.endswith("_summary_confidences.json"))
+
+
+def download_from_volume(volume: modal.Volume, remote_prefix: str, local_dir: pathlib.Path,
+                         skip_bulky: bool = False) -> int:
     """把 volume 下 remote_prefix 目录递归下载到 local_dir
 
     - 每个文件先写到 .part, 完整且大小匹配后再 rename 到正式名
     - 单文件失败不影响其他文件, 打日志继续
     - 写入后 fsync, 避免 OS 级缓存未刷盘
+    - skip_bulky: 跳过 is_bulky_result() 命中的大文件 (只对推理结果开, MSA 缓存不能开)
     - 返回成功下载的文件数
     """
     local_dir.mkdir(parents=True, exist_ok=True)
@@ -306,9 +323,13 @@ def download_from_volume(volume: modal.Volume, remote_prefix: str, local_dir: pa
         return 0
 
     success = 0
+    skipped = 0
     failed = []
     for entry in entries:
         if entry.type != modal.volume.FileEntryType.FILE:
+            continue
+        if skip_bulky and is_bulky_result(pathlib.Path(entry.path).name):
+            skipped += 1
             continue
         rel_path = pathlib.Path(entry.path).relative_to(prefix)
         local_path = local_dir / rel_path
@@ -343,6 +364,8 @@ def download_from_volume(volume: modal.Volume, remote_prefix: str, local_dir: pa
                 except OSError:
                     pass
 
+    if skipped:
+        print(f"    [skip] {skipped} 个大文件未下载 (需要时去 volume 取)")
     if failed:
         print(f"  [WARN] {len(failed)} file(s) failed under prefix '{prefix}'")
     return success
@@ -488,6 +511,7 @@ def main(skip_existing: bool = True):
                 results_volume,
                 job_name,
                 MSA_OUTPUT_DIR / job_name,
+                True,          # skip_bulky: 不下 *_confidences.json 与 *_data.json
             ): job_name
             for job_name, _ in jobs
         }
@@ -649,6 +673,7 @@ def only_inference(skip_existing: bool = True):
                 results_volume,
                 job_name,
                 MSA_OUTPUT_DIR / job_name,
+                True,          # skip_bulky: 不下 *_confidences.json 与 *_data.json
             ): job_name
             for job_name, _ in jobs
         }
@@ -730,6 +755,7 @@ def only_inference_no_msa(skip_existing: bool = True):
                 results_volume,
                 job_name,
                 NO_MSA_OUTPUT_DIR / job_name,
+                True,          # skip_bulky: 不下 *_confidences.json 与 *_data.json
             ): job_name
             for job_name, _ in jobs
         }
