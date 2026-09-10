@@ -378,10 +378,10 @@ modal volume put <VOLUME_NAME> <LOCAL_PATH> <REMOTE_PATH>
 ```bash
 modal volume get <VOLUME_NAME> <REMOTE_PATH> <LOCAL_PATH>
 # 加 --force 会覆盖当前已有的文件与目录
-# modal volume get alphafold3-results / "C:\Users\Lamarck\Desktop\af3_msa_outputs"
-# modal volume get --force alphafold3-results / "C:\Users\Lamarck\Desktop\af3_msa_outputs"
+# modal volume get alphafold3-results / "G:\Lab_Data\af3_msa_outputs"
+# modal volume get --force alphafold3-results / "G:\Lab_Data\af3_msa_outputs"
 # 只下载某个子目录
-# modal volume get alphafold3-results /Ad7_Hexon_H1_36 "C:\Users\Lamarck\Desktop\af3_msa_outputs"
+# modal volume get alphafold3-results /Ad7_Hexon_H1_36 "G:\Lab_Data\af3_msa_outputs"
 ```
 
 > **在 volume 中复制文件**

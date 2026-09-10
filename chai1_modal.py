@@ -7,8 +7,8 @@ app = modal.App("chai1-batch")
 # ============================================================
 # 本地路径配置
 # ============================================================
-INPUT_DIR = pathlib.Path(r"C:\Users\Lamarck\Desktop\chai1_inputs")     # 输入 .fasta
-OUTPUT_DIR = pathlib.Path(r"C:\Users\Lamarck\Desktop\chai1_outputs")   # 推理结果
+INPUT_DIR = pathlib.Path(r"G:\Lab_Data\chai1_inputs")      # 输入 .fasta
+OUTPUT_DIR = pathlib.Path(r"G:\Lab_Data\chai1_outputs")    # 推理结果
 
 # ============================================================
 # Chai-1 推理参数 (按需修改)

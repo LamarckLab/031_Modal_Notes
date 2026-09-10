@@ -7,11 +7,11 @@ app = modal.App("alphafold3-batch")  # 创建 App, 所有函数 / 入口都挂�
 # ============================================================
 # 本地路径配置
 # ============================================================
-INPUT_DIR = pathlib.Path(r"C:\Users\Lamarck\Desktop\af3_inputs")              # 输入: 原始序列 JSON
-MSA_DIR = pathlib.Path(r"C:\Users\Lamarck\Desktop\af3_msa")                   # 缓存: data pipeline 产物 _data.json
-MSA_OUTPUT_DIR = pathlib.Path(r"C:\Users\Lamarck\Desktop\af3_msa_outputs")        # 输出: MSA 推理结果
-NO_MSA_DIR = pathlib.Path(r"C:\Users\Lamarck\Desktop\af3_no_msa")                 # 中间: MSA-free 输入 (补空 MSA 字段)
-NO_MSA_OUTPUT_DIR = pathlib.Path(r"C:\Users\Lamarck\Desktop\af3_no_msa_outputs")  # 输出: MSA-free 推理结果
+INPUT_DIR = pathlib.Path(r"G:\Lab_Data\af3_inputs")                    # 输入: 原始序列 JSON
+MSA_DIR = pathlib.Path(r"G:\Lab_Data\af3_msa")                         # 缓存: data pipeline 产物 _data.json
+MSA_OUTPUT_DIR = pathlib.Path(r"G:\Lab_Data\af3_msa_outputs")          # 输出: MSA 推理结果
+NO_MSA_DIR = pathlib.Path(r"G:\Lab_Data\af3_no_msa")                   # 中间: MSA-free 输入 (补空 MSA 字段)
+NO_MSA_OUTPUT_DIR = pathlib.Path(r"G:\Lab_Data\af3_no_msa_outputs")    # 输出: MSA-free 推理结果
 
 
 # ============================================================
