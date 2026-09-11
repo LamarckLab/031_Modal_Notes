@@ -306,7 +306,7 @@ def is_bulky_result(file_name: str) -> bool:
 
 
 def download_from_volume(volume: modal.Volume, remote_prefix: str, local_dir: pathlib.Path,
-                         skip_bulky: bool = False) -> int:
+                         skip_bulky: bool = False, entries=None) -> int:
     """把 volume 下 remote_prefix 目录递归下载到 local_dir
 
     - 每个文件先写到 .part, 完整且大小匹配后再 rename 到正式名
@@ -317,10 +317,11 @@ def download_from_volume(volume: modal.Volume, remote_prefix: str, local_dir: pa
     """
     local_dir.mkdir(parents=True, exist_ok=True)
     prefix = remote_prefix.rstrip("/")
-    try:
-        entries = list(volume.iterdir(f"{prefix}/", recursive=True))
-    except (FileNotFoundError, modal.exception.NotFoundError):
-        return 0
+    if entries is None:                  # 调用方没预先列好就自己列 (保持原行为)
+        try:
+            entries = list(volume.iterdir(f"{prefix}/", recursive=True))
+        except (FileNotFoundError, modal.exception.NotFoundError):
+            return 0
 
     success = 0
     skipped = 0
@@ -657,16 +658,50 @@ def only_inference(skip_existing: bool = True):
         upload_file_to_volume(msa_cache_volume, data_file, msa_remote_path(job_name))
         print(f"  [OK]   {job_name:20s} uploaded {data_file.name}")
 
+    # --- 查 volume 上已完成的结果: 跳过推理直接下载 (省钱 + 断点续跑) ---
+    try:
+        result_entries = list(results_volume.iterdir("/", recursive=True))
+    except (FileNotFoundError, modal.exception.NotFoundError):
+        result_entries = []
+    done_files = {}                          # job 名 -> 该 job 在 volume 上的文件名集合
+    for e in result_entries:
+        if e.type == modal.volume.FileEntryType.FILE:
+            job, _, rest = e.path.partition("/")
+            if rest and (getattr(e, 'size', 0) or 0) > 0:
+                done_files.setdefault(job, set()).add(pathlib.Path(e.path).name)
+
+    def volume_has_result(job_name: str) -> bool:
+        """volume 上有非空的 {job}_model.cif 才算完成 (只认目录名会把崩溃留下的空目录当成功)"""
+        return f"{job_name}_model.cif" in done_files.get(job_name, set())
+
+    to_infer = [(n, p) for n, p in jobs if not volume_has_result(n)]
+    reused = len(jobs) - len(to_infer)
+    if reused:
+        print(f"[reuse] volume 上已有 {reused} 个完成的结果, 跳过推理直接下载")
+
     # --- 跑 inference ---
-    print(f"\nRunning inference for {len(jobs)} job(s)...")
-    print("=" * 60)
-    inf_args = [(job_name,) for job_name, _ in jobs]
-    list(run_inference.starmap(inf_args, order_outputs=True))
+    if to_infer:
+        print(f"Running inference for {len(to_infer)} job(s)...")
+        print("=" * 60)
+        inf_args = [(job_name,) for job_name, _ in to_infer]
+        list(run_inference.starmap(inf_args, order_outputs=True))
+    else:
+        print("所有任务在 volume 上都已有结果, 无需推理")
+
+    # 有新推理的就重列一次(整体一次调用), 然后按 job 分组供下载直接使用
+    if to_infer:
+        try:
+            result_entries = list(results_volume.iterdir("/", recursive=True))
+        except (FileNotFoundError, modal.exception.NotFoundError):
+            result_entries = []
+    by_job = {}
+    for e in result_entries:
+        by_job.setdefault(e.path.partition("/")[0], []).append(e)
 
     # --- 下载推理结果到本地 ---
     print(f"\n[Download Results] -> {MSA_OUTPUT_DIR}")
     MSA_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=32) as pool:
         futures = {
             pool.submit(
                 download_from_volume,
@@ -674,6 +709,7 @@ def only_inference(skip_existing: bool = True):
                 job_name,
                 MSA_OUTPUT_DIR / job_name,
                 True,          # skip_bulky: 不下 *_confidences.json 与 *_data.json
+                by_job.get(job_name),   # 预列好的条目, 不再每个 job 列一次目录
             ): job_name
             for job_name, _ in jobs
         }
@@ -681,7 +717,10 @@ def only_inference(skip_existing: bool = True):
             job_name = futures[fut]
             try:
                 n = fut.result()
-                print(f"  [OK]   {job_name:20s} {n} files")
+                if n == 0:                   # 0 个文件说明没真正下到东西, 不能当成功
+                    print(f"  [EMPTY] {job_name:20s} 0 files —— 结果未下载!")
+                else:
+                    print(f"  [OK]   {job_name:20s} {n} files")
             except Exception as e:
                 print(f"  [FAIL] {job_name:20s} download failed: {e}")
 
