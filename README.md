@@ -361,7 +361,7 @@ modal volume ls <VOLUME_NAME> [PATH]
 > **创建或删除一个 volume**
 ```bash
 modal volume create <volume-name>
-# modal volume create lamarck-data
+# modal volume create alphafold3-msa-cache
 
 modal volume delete <volume-name>
 # modal volume delete lamarck-data
