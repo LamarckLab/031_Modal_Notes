@@ -807,3 +807,166 @@ def only_inference_no_msa(skip_existing: bool = True):
                 print(f"  [FAIL] {job_name:20s} download failed: {e}")
 
     print("MSA-free inference done.")
+
+
+# ============================================================
+# 函数 4: 批量推理 (一个容器内连跑多个任务)
+# 单任务调用每次都要重新加载权重 + 重新编译 JAX 算子, 实测固定开销约 107 秒/任务;
+# 改用 --input_dir 让一个进程连跑一批, 这笔开销每批只付一次
+# 读取: /msa_cache/{job}/{job}_data.json (软链到临时目录, 不复制)
+# 产出: /results/{job}/...  (比单任务模式少一层嵌套)
+# ============================================================
+@app.function(
+    image=af3_image,
+    volumes={
+        "/data": af3_volume,
+        "/msa_cache": msa_cache_volume,
+        "/results": results_volume,
+    },
+    gpu="H100",
+    cpu=4,
+    memory=16384,
+    timeout=60 * 60 * 12,
+    retries=modal.Retries(max_retries=2, initial_delay=10.0),
+)
+def run_inference_batch(job_names: list, num_seeds: int = 0) -> int:
+    import os
+    import pathlib
+    import shutil
+    import subprocess
+
+    msa_cache_volume.reload()
+
+    batch_dir = pathlib.Path("/tmp/batch_in")
+    if batch_dir.exists():
+        shutil.rmtree(batch_dir)
+    batch_dir.mkdir(parents=True)
+
+    missing = []
+    for job_name in job_names:
+        src = pathlib.Path(f"/msa_cache/{msa_remote_path(job_name)}")
+        if src.exists():
+            os.symlink(src, batch_dir / f"{job_name}_data.json")   # 软链, 省掉复制
+        else:
+            missing.append(job_name)
+    if missing:
+        raise FileNotFoundError(f"MSA cache not found for: {missing}")
+
+    cmd = [
+        "/alphafold3_venv/bin/python3", "/app/alphafold/run_alphafold.py",
+        f"--input_dir={batch_dir}",
+        "--model_dir=/data/parameters",
+        "--output_dir=/results",
+        "--norun_data_pipeline",
+    ]
+    if num_seeds:                                # 0 = 不传, 沿用 JSON 里的 modelSeeds
+        cmd.append(f"--num_seeds={num_seeds}")
+    print(f"[batch] {len(job_names)} jobs, seeds={num_seeds or 'from JSON'}")
+    subprocess.run(cmd, check=True, cwd="/app/alphafold")
+
+    results_volume.commit()
+    return len(job_names)
+
+
+# ============================================================
+# 入口 5: 批量仅推理
+# 用法: modal run af3_modal.py::only_inference_batch
+#       批大小改函数体内的 BATCH_SIZE, 不走命令行
+#       --num-seeds N 可选, 不写则沿用 JSON 里的 modelSeeds (与入口 1-4 一致)
+# 与入口 3 的区别: 一个容器连跑 BATCH_SIZE 个任务; 上传与存在性检查都改成单次批量调用
+# ============================================================
+@app.local_entrypoint()
+def only_inference_batch(num_seeds: int = 0, skip_existing: bool = True):
+    import concurrent.futures
+
+    BATCH_SIZE = 20    # ← 改这里: 一个容器连跑几个任务 (摊薄权重加载与 JAX 编译开销)
+
+    if not MSA_DIR.exists():
+        raise FileNotFoundError(f"Local MSA cache dir not found: {MSA_DIR}")
+
+    found = []
+    for d in sorted(MSA_DIR.iterdir()):
+        if d.is_dir():
+            fs = sorted(d.glob("*_data.json"))
+            if fs:
+                found.append((d.name, fs[0]))
+    if not found:
+        print(f"No valid MSA folders in {MSA_DIR}")
+        return
+
+    jobs = []                                    # 本地已有完整结果的跳过
+    for job_name, data_file in found:
+        job_dir = MSA_OUTPUT_DIR / job_name
+        marks = list(job_dir.rglob(f"{job_name}_model.cif")) if job_dir.exists() else []
+        if skip_existing and any(m.stat().st_size > 0 for m in marks):
+            continue
+        jobs.append((job_name, data_file))
+    print("=" * 60)
+    print(f"扫描到 {len(found)} 个任务, 待处理 {len(jobs)} 个")
+    if not jobs:
+        print("Nothing to do.")
+        return
+
+    def _list(vol):                              # 整卷列一次, 而不是每个 job 列一次
+        try:
+            return list(vol.iterdir("/", recursive=True))
+        except (FileNotFoundError, modal.exception.NotFoundError):
+            return []
+
+    cached = {
+        e.path.partition("/")[0] for e in _list(msa_cache_volume)
+        if e.type == modal.volume.FileEntryType.FILE
+        and pathlib.Path(e.path).name == f"{e.path.partition('/')[0]}_data.json"
+    }
+    todo = [(n, p) for n, p in jobs if n not in cached]
+    print(f"volume 已有 MSA {len(jobs) - len(todo)} 个, 需上传 {len(todo)} 个")
+    if todo:                                     # 一个 batch 装完, 内部并行
+        with msa_cache_volume.batch_upload(force=True) as batch:
+            for job_name, data_file in todo:
+                batch.put_file(str(data_file), msa_remote_path(job_name))
+        print(f"[Upload] {len(todo)} 个已上传")
+
+    done = set()
+    for e in _list(results_volume):
+        if e.type == modal.volume.FileEntryType.FILE and (getattr(e, "size", 0) or 0) > 0:
+            job = e.path.partition("/")[0]
+            if pathlib.Path(e.path).name == f"{job}_model.cif":
+                done.add(job)
+    to_infer = [n for n, _ in jobs if n not in done]
+    if len(jobs) - len(to_infer):
+        print(f"[reuse] volume 上已有 {len(jobs) - len(to_infer)} 个完成的结果, 跳过推理")
+
+    if to_infer:
+        batches = [to_infer[i:i + BATCH_SIZE] for i in range(0, len(to_infer), BATCH_SIZE)]
+        print()
+        print(f"推理: {len(to_infer)} 个任务 -> {len(batches)} 批 x {BATCH_SIZE}, seeds={num_seeds or 'from JSON'}")
+        print("=" * 60)
+        list(run_inference_batch.starmap([(b, num_seeds) for b in batches]))
+    else:
+        print("所有任务在 volume 上都已有结果, 无需推理")
+
+    by_job = {}                                  # 下载复用这次列目录的结果
+    for e in _list(results_volume):
+        by_job.setdefault(e.path.partition("/")[0], []).append(e)
+
+    print()
+    print(f"[Download Results] -> {MSA_OUTPUT_DIR}")
+    MSA_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=32) as pool:
+        futures = {
+            pool.submit(download_from_volume, results_volume, n,
+                        MSA_OUTPUT_DIR / n, True, by_job.get(n)): n
+            for n, _ in jobs
+        }
+        for fut in concurrent.futures.as_completed(futures):
+            n = futures[fut]
+            try:
+                c = fut.result()
+                if c == 0:
+                    print(f"  [EMPTY] {n:34s} 0 files —— 结果未下载!")
+                else:
+                    print(f"  [OK]   {n:34s} {c} files")
+            except Exception as exc:
+                print(f"  [FAIL] {n:34s} download failed: {exc}")
+
+    print("Batch inference done.")
