@@ -877,7 +877,8 @@ def run_inference_batch(job_names: list, num_seeds: int = 0) -> int:
 def only_inference_batch(num_seeds: int = 0, skip_existing: bool = True):
     import concurrent.futures
 
-    BATCH_SIZE = 20    # ← 改这里: 一个容器连跑几个任务 (摊薄权重加载与 JAX 编译开销)
+    BATCH_SIZE = 50    # ← 改这里: 一个容器连跑几个任务 (摊薄权重加载与 JAX 编译开销)
+    UPLOAD_CHUNK = 100 # ← 改这里: 每个上传会话装几个文件 (会话结束才 commit, 越小越抗断)
 
     if not MSA_DIR.exists():
         raise FileNotFoundError(f"Local MSA cache dir not found: {MSA_DIR}")
@@ -918,11 +919,12 @@ def only_inference_batch(num_seeds: int = 0, skip_existing: bool = True):
     }
     todo = [(n, p) for n, p in jobs if n not in cached]
     print(f"volume 已有 MSA {len(jobs) - len(todo)} 个, 需上传 {len(todo)} 个")
-    if todo:                                     # 一个 batch 装完, 内部并行
+    for i in range(0, len(todo), UPLOAD_CHUNK):  # 切成多个会话: 每个会话结束即 commit
+        chunk = todo[i:i + UPLOAD_CHUNK]
         with msa_cache_volume.batch_upload(force=True) as batch:
-            for job_name, data_file in todo:
+            for job_name, data_file in chunk:
                 batch.put_file(str(data_file), msa_remote_path(job_name))
-        print(f"[Upload] {len(todo)} 个已上传")
+        print(f"[Upload] {min(i + UPLOAD_CHUNK, len(todo))}/{len(todo)} 已上传并提交")
 
     done = set()
     for e in _list(results_volume):
