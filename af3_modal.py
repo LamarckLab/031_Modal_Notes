@@ -214,8 +214,7 @@ def run_inference(job_name: str) -> str:
 
     result_dir = pathlib.Path(f"/results/{job_name}")
     if result_dir.exists():
-        shutil.rmtree(result_dir)
-    result_dir.mkdir(parents=True, exist_ok=True)
+        shutil.rmtree(result_dir)            # 清掉旧结果, 下面由 AF3 按 name 重建
 
     # 直接用镜像里装好的 venv, 不走 uv run —— uv run 每次会校验并可能重建环境,
     # 重建时 cifpp 的 CMake 要联网下 CCD 文件, SSL 一挂整批任务就中止
@@ -223,7 +222,7 @@ def run_inference(job_name: str) -> str:
         "/alphafold3_venv/bin/python3", "/app/alphafold/run_alphafold.py",
         f"--json_path={data_json_path}",
         "--model_dir=/data/parameters",
-        f"--output_dir={result_dir}",
+        "--output_dir=/results",           # AF3 自己按 name 建一层, 不再多套一层同名目录
         "--norun_data_pipeline",
     ]
     subprocess.run(cmd, check=True, cwd="/app/alphafold")
@@ -273,14 +272,13 @@ def run_inference_no_msa(job_name: str, raw_json: str) -> str:
 
     result_dir = pathlib.Path(f"/results/{job_name}")
     if result_dir.exists():
-        shutil.rmtree(result_dir)
-    result_dir.mkdir(parents=True, exist_ok=True)
+        shutil.rmtree(result_dir)            # 清掉旧结果, 下面由 AF3 按 name 重建
 
     cmd = [
         "/alphafold3_venv/bin/python3", "/app/alphafold/run_alphafold.py",
         f"--json_path={tmp_json}",
         "--model_dir=/data/parameters",
-        f"--output_dir={result_dir}",
+        "--output_dir=/results",           # AF3 自己按 name 建一层, 不再多套一层同名目录
         "--norun_data_pipeline",
     ]
     subprocess.run(cmd, check=True, cwd="/app/alphafold")
