@@ -1,4 +1,4 @@
-<h1 align="center">💻 Modal 云计算平台学习笔记</h1>
+<h1 align="center">💻 Modal 云计算平台笔记</h1>
 
 <p align="center"><em>—— 2026.04.01</em></p>
 
